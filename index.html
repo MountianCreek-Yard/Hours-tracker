@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Copyright (c) 2026 David Kerr. All rights reserved. Unauthorized copying, reuse or distribution is prohibited. -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
@@ -8,14 +9,13 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
 <style>
-/* Layout: header bar, then a two-column work area (log form | day summary), then history and settings full width. */
 :root {
   --bg: #eef0f2;
   --surface: #ffffff;
   --ink: #1d2329;
   --muted: #5d6873;
   --line: #d5dae0;
-  --accent: #e8a317;       /* safety amber */
+  --accent: #e8a317;
   --accent-ink: #1d2329;
   --danger: #b3261e;
   --ok: #1f7a4d;
@@ -130,12 +130,8 @@ details.settings summary { cursor: pointer; font: 700 19px var(--font-display); 
 </style>
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
 <script>
-/* ============================================================
-   PASTE YOUR SUPABASE SETTINGS HERE (see README.md, step 2).
-   Supabase dashboard → Project Settings → API
-   ============================================================ */
-window.SUPABASE_URL = "https://ljottpkzdtgcklhgipee.supabase.co";       // e.g. https://abcdefgh.supabase.co
-window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // the "anon" / "public" key, NOT the service_role key
+window.SUPABASE_URL = "https://ljottpkzdtgcklhgipee.supabase.co";
+window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK";
 </script>
 </head>
 <body>
@@ -240,8 +236,8 @@ window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // 
     db: null, uid: null, canWrite: true,
     associates: [], activities: [], listsVersionLoaded: false,
     viewDate: today(),
-    dayDoc: null,          // entries map for viewDate
-    history: [],           // [{date, entries}]
+    dayDoc: null,
+    history: [],
   };
 
   function colorFor(act) {
@@ -259,7 +255,6 @@ window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // 
   function showStatus(text) { const s = $("status"); if (text) { s.textContent = text; s.hidden = false; } else { s.hidden = true; } }
   function setMsg(el, text, kind) { el.textContent = text || ""; el.className = "msg" + (kind ? " " + kind : ""); }
 
-  // ---------- rendering ----------
   function fillSelect(sel, items, placeholder) {
     const cur = sel.value;
     sel.innerHTML = '<option value="">' + esc(placeholder) + "</option>" + items.map((x) => '<option value="' + esc(x) + '">' + esc(x) + "</option>").join("");
@@ -293,7 +288,6 @@ window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // 
     $("dayTiles").innerHTML = acts.map((a) =>
       '<div class="tile" style="--c:' + colorFor(a) + '"><div class="name">' + esc(a) + '</div><div class="val">' + fmt(byAct[a] || 0) + '</div><div class="pct">' + (total ? Math.round((byAct[a] || 0) / total * 100) : 0) + '% of day</div></div>').join("");
 
-    // associate x activity matrix
     const assocs = [...people].sort((a, b) => a.localeCompare(b));
     if (!assocs.length) { $("matrix").innerHTML = '<tr><td class="empty">Hours by associate will show here once someone logs time for this day.</td></tr>'; }
     else {
@@ -306,7 +300,6 @@ window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // 
       $("matrix").innerHTML = h;
     }
 
-    // entries list
     const sorted = list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0));
     if (!sorted.length) $("entries").innerHTML = '<tr><td class="empty">Nothing logged for ' + esc(pretty(d)) + ". Use the Log hours form to add the first entry.</td></tr>";
     else $("entries").innerHTML = "<thead><tr><th>Associate</th><th>Activity</th><th class=\"num\">Hours</th><th>Notes</th><th></th></tr></thead><tbody>" +
@@ -330,7 +323,6 @@ window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // 
     $("history").innerHTML = h;
   }
 
-  // ---------- data (Supabase) ----------
   const HISTORY_DAYS = 62;
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   async function q(promise) {
@@ -404,7 +396,6 @@ window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // 
     refreshTimer = setTimeout(() => { loadDay().catch(() => {}); loadHistory().catch(() => {}); }, 250);
   }
 
-  // ---------- events ----------
   $("quickHours").innerHTML = [1, 2, 4, 6, 8, 10].map((h) => '<button type="button" data-h="' + h + '">' + h + "</button>").join("");
   $("quickHours").addEventListener("click", (ev) => { const b = ev.target.closest("[data-h]"); if (b) { $("fHours").value = b.dataset.h; $("fHours").focus(); } });
 
@@ -471,7 +462,6 @@ window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // 
       .catch((e) => setMsg($("listMsg"), e && e.code === "23503" ? "Couldn't remove it. Try again." : "Couldn't save. Try again.", "err"));
   });
 
-  // ---------- start ----------
   $("viewDate").value = state.viewDate; $("fDate").value = state.viewDate;
   renderLists(); renderDay(); renderHistory();
 
@@ -498,15 +488,13 @@ window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // 
       showStatus(e && e.code === "42P01" ? "The database tables don't exist yet. Run the setup SQL from README.md, step 1, then reload." : "Couldn't reach your Supabase database (" + (e && (e.message || e.code) || "error") + "). Check the URL and key in index.html, then reload.");
       return;
     }
-    // Live updates when anyone adds or removes hours or changes the lists
     try {
       state.db.channel("tracker")
         .on("postgres_changes", { event: "*", schema: "public", table: "hour_entries" }, refreshSoon)
         .on("postgres_changes", { event: "*", schema: "public", table: "associates" }, () => loadLists().catch(() => {}))
         .on("postgres_changes", { event: "*", schema: "public", table: "activities" }, () => loadLists().catch(() => {}))
         .subscribe();
-    } catch (e) { /* live updates are optional; the refresh below still runs */ }
-    // Safety net: refresh every 30 seconds and when the tab comes back into view
+    } catch (e) {}
     setInterval(() => { if (!document.hidden) { refreshSoon(); } }, 30000);
     document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshSoon(); loadLists().catch(() => {}); } });
   })();
@@ -514,4 +502,5 @@ window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // 
 </script>
 </body>
 </html>
+
 
