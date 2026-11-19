@@ -128,6 +128,15 @@ details.settings summary { cursor: pointer; font: 700 19px var(--font-display); 
 .addrow input { flex: 1; }
 @media (prefers-reduced-motion: no-preference) { .btn, .del { transition: filter .15s, border-color .15s, background .15s; } }
 </style>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.45.4/dist/umd/supabase.js"></script>
+<script>
+/* ============================================================
+   PASTE YOUR SUPABASE SETTINGS HERE (see README.md, step 2).
+   Supabase dashboard → Project Settings → API
+   ============================================================ */
+window.SUPABASE_URL = "https://ljottpkzdtgcklhgipee.supabase.co";       // e.g. https://abcdefgh.supabase.co
+window.SUPABASE_ANON_KEY = "sb_publishable_tzUoweXTyd4MkvVKfExedw_i2OUn5OK"; // the "anon" / "public" key, NOT the service_role key
+</script>
 </head>
 <body>
 <header class="bar">
@@ -321,20 +330,51 @@ details.settings summary { cursor: pointer; font: 700 19px var(--font-display); 
     $("history").innerHTML = h;
   }
 
-  // ---------- data ----------
-  let unsubDay = null;
-  function watchDay() {
-    if (unsubDay) unsubDay();
-    state.dayDoc = null; renderDay();
+  // ---------- data (Supabase) ----------
+  const HISTORY_DAYS = 62;
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function q(promise) {
+    const { data, error } = await promise;
+    if (error) throw error;
+    return data;
+  }
+  function toMap(rows) {
+    const m = {};
+    rows.forEach((r) => { m[r.id] = { associate: r.associate, activity: r.activity, hours: Number(r.hours), note: r.note || "", createdAt: Date.parse(r.created_at) || 0, deleted: !!r.deleted }; });
+    return m;
+  }
+  async function loadDay() {
     if (!state.db) return;
     const date = state.viewDate;
-    unsubDay = state.db.doc("days/" + date).onSnapshot((snap) => {
-      if (date !== state.viewDate) return;
-      state.dayDoc = snap.exists ? (snap.data().entries || null) : null;
-      renderDay();
-    }, (e) => showStatus("This day's hours stopped updating (" + e.code + "). Reload the page to reconnect."));
+    const rows = await q(state.db.from("hour_entries").select("*").eq("work_date", date).eq("deleted", false).order("created_at"));
+    if (date !== state.viewDate) return;
+    state.dayDoc = toMap(rows);
+    renderDay();
   }
-
+  async function loadHistory() {
+    if (!state.db) return;
+    const since = shiftDay(today(), -HISTORY_DAYS);
+    const rows = await q(state.db.from("hour_entries").select("id,work_date,associate,activity,hours,deleted,created_at").gte("work_date", since).eq("deleted", false).order("work_date", { ascending: false }).limit(10000));
+    const byDay = {};
+    rows.forEach((r) => { (byDay[r.work_date] = byDay[r.work_date] || []).push(r); });
+    state.history = Object.keys(byDay).sort().reverse().slice(0, 31).map((d) => ({ date: d, entries: toMap(byDay[d]) }));
+    renderHistory();
+  }
+  async function loadLists() {
+    if (!state.db) return;
+    const [as, acts] = await Promise.all([
+      q(state.db.from("associates").select("name").order("name")),
+      q(state.db.from("activities").select("name,sort").order("sort").order("name")),
+    ]);
+    state.associates = as.map((r) => r.name);
+    state.activities = acts.map((r) => r.name);
+    state.listsVersionLoaded = true;
+    renderLists(); renderDay(); renderHistory();
+  }
+  function watchDay() {
+    state.dayDoc = null; renderDay();
+    loadDay().catch(() => showStatus("Couldn't load this day's hours. Check your connection and reload."));
+  }
   function setView(date) {
     if (!isDate(date)) return;
     state.viewDate = date;
@@ -343,30 +383,25 @@ details.settings summary { cursor: pointer; font: 700 19px var(--font-display); 
     watchDay();
     renderHistory();
   }
-
   async function addEntry(date, entry) {
-    const id = "e" + Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
-    const ref = state.db.doc("days/" + date);
-    const patch = { entries: { [id]: entry } };
-    for (let attempt = 0; attempt < 6; attempt++) {
-      try { await ref.update(patch); return; }
-      catch (e) {
-        if (e && e.code === "unavailable") { await sleep(400 + Math.random() * 600); continue; }
-        if (!e || e.code !== "invalid_argument") throw e;
-        // Day document does not exist yet: create it under a short lease so two people can't overwrite each other.
-        const lease = await ref.acquire({ holder: (state.uid || "anon") + "-" + id, ttlMs: 3000 });
-        if (!lease.acquired) { await sleep(500 + Math.random() * 500); continue; }
-        const snap = await ref.get();
-        if (!snap.exists || !snap.data().entries) { await ref.set({ date, entries: { [id]: entry } }); return; }
-        // created by someone else meanwhile: loop and update
-      }
-    }
-    throw { code: "busy", message: "Too many people saving at once." };
+    await q(state.db.from("hour_entries").insert({ work_date: date, associate: entry.associate, activity: entry.activity, hours: entry.hours, note: entry.note || null }));
+    refreshSoon();
   }
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
   async function saveLists(next) {
-    await state.db.doc("config/lists").set({ associates: next.associates, activities: next.activities });
+    const addA = next.associates.filter((x) => !state.associates.includes(x));
+    const delA = state.associates.filter((x) => !next.associates.includes(x));
+    const addT = next.activities.filter((x) => !state.activities.includes(x));
+    const delT = state.activities.filter((x) => !next.activities.includes(x));
+    if (addA.length) await q(state.db.from("associates").insert(addA.map((name) => ({ name }))));
+    if (delA.length) await q(state.db.from("associates").delete().in("name", delA));
+    if (addT.length) await q(state.db.from("activities").insert(addT.map((name, i) => ({ name, sort: state.activities.length + i + 1 }))));
+    if (delT.length) await q(state.db.from("activities").delete().in("name", delT));
+    await loadLists();
+  }
+  let refreshTimer = null;
+  function refreshSoon() {
+    clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(() => { loadDay().catch(() => {}); loadHistory().catch(() => {}); }, 250);
   }
 
   // ---------- events ----------
@@ -376,7 +411,7 @@ details.settings summary { cursor: pointer; font: 700 19px var(--font-display); 
   $("logForm").addEventListener("submit", async (ev) => {
     ev.preventDefault();
     const msg = $("formMsg");
-    if (!state.db) { setMsg(msg, "Saving isn't available right now. Sign in to Claude and reload this page.", "err"); return; }
+    if (!state.db) { setMsg(msg, "Not connected to the database. Check the Supabase settings in index.html.", "err"); return; }
     const date = $("fDate").value, associate = $("fAssoc").value, activity = $("fAct").value;
     const hours = parseFloat($("fHours").value), note = $("fNote").value.trim();
     if (!isDate(date)) return setMsg(msg, "Pick a date.", "err");
@@ -390,8 +425,8 @@ details.settings summary { cursor: pointer; font: 700 19px var(--font-display); 
       $("fHours").value = ""; $("fNote").value = ""; $("fAct").value = ""; $("fAct").focus();
       if (date !== state.viewDate) setView(date);
     } catch (e) {
-      if (e && e.code === "invalid_argument") { state.canWrite = false; setMsg(msg, "You have view-only access, so hours can't be saved. Ask the tracker's owner for Contributor access.", "err"); }
-      else if (e && e.code === "quota_exceeded") setMsg(msg, "The tracker's storage is full. Ask the owner to clear out old days.", "err");
+      if (e && e.code === "42501") setMsg(msg, "The database refused the save. Run the setup SQL from README.md, step 1.", "err");
+      else if (e && e.code === "42P01") setMsg(msg, "The database tables don't exist yet. Run the setup SQL from README.md, step 1.", "err");
       else setMsg(msg, "Couldn't save. Check your connection and press Add hours again.", "err");
     } finally { $("addBtn").disabled = false; }
   });
@@ -401,8 +436,8 @@ details.settings summary { cursor: pointer; font: 700 19px var(--font-display); 
     const id = b.dataset.del;
     if (b.dataset.confirm !== "1") { b.dataset.confirm = "1"; b.textContent = "Remove?"; b.style.fontSize = "13px"; setTimeout(() => { if (b.isConnected) { b.dataset.confirm = ""; b.textContent = "×"; b.style.fontSize = ""; } }, 3000); return; }
     b.disabled = true;
-    try { await state.db.doc("days/" + state.viewDate).update({ entries: { [id]: { deleted: true } } }); }
-    catch (e) { b.disabled = false; showStatus(e && e.code === "invalid_argument" ? "You have view-only access, so entries can't be removed." : "Couldn't remove that entry. Try again."); }
+    try { await q(state.db.from("hour_entries").update({ deleted: true }).eq("id", id)); refreshSoon(); }
+    catch (e) { b.disabled = false; showStatus(e && e.code === "42501" ? "The database refused the change. Run the setup SQL from README.md, step 1." : "Couldn't remove that entry. Try again."); }
   });
 
   $("history").addEventListener("click", (ev) => { const r = ev.target.closest("tr[data-date]"); if (r) { setView(r.dataset.date); window.scrollTo({ top: 0, behavior: "smooth" }); } });
@@ -422,7 +457,7 @@ details.settings summary { cursor: pointer; font: 700 19px var(--font-display); 
     next[key].push(name);
     if (key === "associates") next.associates.sort((a, b) => a.localeCompare(b));
     saveLists(next).then(() => { input.value = ""; setMsg($("listMsg"), "Added " + name + ".", "ok"); })
-      .catch((e) => setMsg($("listMsg"), e && e.code === "invalid_argument" ? "You have view-only access." : "Couldn't save. Try again.", "err"));
+      .catch((e) => setMsg($("listMsg"), e && e.code === "23505" ? "That name is already on the list." : e && e.code === "42501" ? "The database refused the change. Run the setup SQL from README.md." : "Couldn't save. Try again.", "err"));
   }
   $("addAssoc").addEventListener("submit", (e) => { e.preventDefault(); listAdd("assoc", $("newAssoc")); });
   $("addAct").addEventListener("submit", (e) => { e.preventDefault(); listAdd("act", $("newAct")); });
@@ -433,7 +468,7 @@ details.settings summary { cursor: pointer; font: 700 19px var(--font-display); 
     const next = { associates: [...state.associates], activities: [...state.activities] };
     next[key] = next[key].filter((x) => x !== b.dataset.name);
     saveLists(next).then(() => setMsg($("listMsg"), "Removed " + b.dataset.name + ". Hours already logged for it are kept.", "ok"))
-      .catch(() => setMsg($("listMsg"), "Couldn't save. Try again.", "err"));
+      .catch((e) => setMsg($("listMsg"), e && e.code === "23503" ? "Couldn't remove it. Try again." : "Couldn't save. Try again.", "err"));
   });
 
   // ---------- start ----------
@@ -441,40 +476,42 @@ details.settings summary { cursor: pointer; font: 700 19px var(--font-display); 
   renderLists(); renderDay(); renderHistory();
 
   (async function connect() {
-    let db = null;
-    try { db = window.claude && window.claude.use ? await window.claude.use("db") : null; } catch (e) { db = null; }
-    if (!db) { setSync("Not connected: hours can't be saved here", "off"); showStatus("Saved hours can't be loaded here. Open this page signed in to Claude to log and see hours."); $("addBtn").disabled = true; return; }
-    state.db = db;
+    const url = window.SUPABASE_URL || "", key = window.SUPABASE_ANON_KEY || "";
+    if (!/^https:\/\//.test(url) || key.indexOf("PASTE") === 0 || !key) {
+      setSync("Not connected: Supabase settings missing", "off");
+      showStatus("This tracker isn't connected to your database yet. Paste your Supabase URL and anon key into index.html (see README.md, step 2).");
+      $("addBtn").disabled = true; return;
+    }
+    if (!window.supabase || !window.supabase.createClient) {
+      setSync("Not connected", "off");
+      showStatus("Couldn't load the Supabase library. Check your internet connection and reload.");
+      $("addBtn").disabled = true; return;
+    }
+    state.db = window.supabase.createClient(url, key);
     try {
-      const user = await window.claude.use("user");
-      if (user) {
-        state.uid = await user.id().catch(() => null);
-        const cw = user.can ? await Promise.resolve(user.can("data.write")).catch(() => null) : null;
-        if (cw === false) { state.canWrite = false; $("addBtn").disabled = true; showStatus("You have view-only access. You can see hours, but only Contributors can log them."); }
-      }
-    } catch (e) { /* user info is optional */ }
-
-    let gotLists = false, gotHist = false;
-    const timer = setTimeout(() => { if (!gotLists || !gotHist) showStatus("Still loading saved hours. Check your connection; this page will update by itself once it connects."); }, 10000);
-    const done = () => { if (gotLists && gotHist) { clearTimeout(timer); setSync(state.canWrite ? "Shared with everyone on this link · live" : "Shared · live · view only", "live"); if (state.canWrite) showStatus(""); } };
-
-    db.doc("config/lists").onSnapshot((snap) => {
-      const d = snap.exists ? snap.data() : {};
-      state.associates = Array.isArray(d.associates) ? d.associates.filter((x) => typeof x === "string") : [];
-      state.activities = Array.isArray(d.activities) ? d.activities.filter((x) => typeof x === "string") : [];
-      if (!snap.metadata.fromCache) { gotLists = true; state.listsVersionLoaded = true; done(); }
-      renderLists(); renderDay(); renderHistory();
-    }, (e) => { clearTimeout(timer); showStatus("Dropdown lists stopped loading (" + e.code + "). Reload the page."); });
-
-    db.collection("days").orderBy("date", "desc").limit(31).onSnapshot((snap) => {
-      state.history = snap.docs.map((d) => { const x = d.data() || {}; return { date: isDate(x.date) ? x.date : d.id, entries: x.entries }; }).filter((h) => isDate(h.date));
-      if (!snap.metadata.fromCache) { gotHist = true; done(); }
-      renderHistory();
-    }, (e) => { clearTimeout(timer); showStatus("Daily totals stopped loading (" + e.code + "). Reload the page."); });
-
-    watchDay();
+      await Promise.all([loadLists(), loadHistory(), loadDay()]);
+      setSync("Connected · shared live with everyone using this site", "live");
+      showStatus("");
+      if (!state.activities.length) showStatus("No activities found. Run the setup SQL from README.md, step 1, which adds Picking, Packing, Direct and Indirect.");
+    } catch (e) {
+      setSync("Not connected", "off");
+      showStatus(e && e.code === "42P01" ? "The database tables don't exist yet. Run the setup SQL from README.md, step 1, then reload." : "Couldn't reach your Supabase database (" + (e && (e.message || e.code) || "error") + "). Check the URL and key in index.html, then reload.");
+      return;
+    }
+    // Live updates when anyone adds or removes hours or changes the lists
+    try {
+      state.db.channel("tracker")
+        .on("postgres_changes", { event: "*", schema: "public", table: "hour_entries" }, refreshSoon)
+        .on("postgres_changes", { event: "*", schema: "public", table: "associates" }, () => loadLists().catch(() => {}))
+        .on("postgres_changes", { event: "*", schema: "public", table: "activities" }, () => loadLists().catch(() => {}))
+        .subscribe();
+    } catch (e) { /* live updates are optional; the refresh below still runs */ }
+    // Safety net: refresh every 30 seconds and when the tab comes back into view
+    setInterval(() => { if (!document.hidden) { refreshSoon(); } }, 30000);
+    document.addEventListener("visibilitychange", () => { if (!document.hidden) { refreshSoon(); loadLists().catch(() => {}); } });
   })();
 })();
 </script>
 </body>
 </html>
+
